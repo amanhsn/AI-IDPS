@@ -1,47 +1,34 @@
-# 📄 responder.py
-
-import pandas as pd
-import datetime
 import os
+import platform
+from datetime import datetime
 
-# === Paths ===
-LOG_FILE = 'data/processed/detection_logs.csv'
+LOG_FILE = "data/processed/firewall_log.txt"
 
-# === Response Manager ===
-class Responder:
-    def __init__(self, log_file=LOG_FILE):
-        self.log_file = log_file
-        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+def block_ip(ip_address):
+    system = platform.system()
 
-    def handle_intrusion(self, sample, details=""):
-        """
-        Respond to detected intrusion.
-        
-        Args:
-        - sample: List or array of feature values
-        - details: Optional additional details (e.g., 'Detected via XGBoost')
-        """
-        timestamp = datetime.datetime.now()
-        print(f"[🚨 ALERT] Intrusion Detected - {timestamp}")
-        print(f"Details: {details}")
-        self.log_event(sample, timestamp, details)
+    if system == "Windows":
+        cmd = f'netsh advfirewall firewall add rule name="BlockIntruder_{ip_address}" dir=in action=block remoteip={ip_address}'
+    elif system == "Linux":
+        cmd = f'sudo iptables -A INPUT -s {ip_address} -j DROP'
+    else:
+        print("⚠️ Unsupported OS for blocking.")
+        return
 
-    def log_event(self, sample, timestamp, details):
-        """
-        Logs the intrusion into CSV file.
-        """
-        df = pd.DataFrame([sample])
-        df['timestamp'] = timestamp
-        df['details'] = details
+    try:
+        os.system(cmd)
+        print(f"🛡️ Blocked IP: {ip_address}")
 
-        if os.path.exists(self.log_file):
-            df.to_csv(self.log_file, mode='a', header=False, index=False)
+        with open(LOG_FILE, "a") as f:
+            f.write(f"{datetime.now()} - Blocked IP: {ip_address}\n")
+
+    except Exception as e:
+        print(f"❌ Failed to block IP: {e}")
+
+def respond_to_intrusion(features, prediction, attacker_ip=None):
+    if prediction == 1:
+        print("🚨 Intrusion detected. Triggering response...")
+        if attacker_ip:
+            block_ip(attacker_ip)
         else:
-            df.to_csv(self.log_file, mode='w', header=True, index=False)
-
-    def block_ip(self, ip_address):
-        """
-        (Optional Future) Block a given IP address (Linux only).
-        """
-        print(f"[⚙️ ACTION] Blocking IP: {ip_address}")
-        os.system(f"sudo iptables -A INPUT -s {ip_address} -j DROP")
+            print("⚠️ No attacker IP provided. Skipping block.")

@@ -3,23 +3,24 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import os
 import time
 import plotly.express as px
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-from src.detector import predict_intrusion, respond_to_intrusion
+import random
+import csv   # ✅ ADD THIS
+import pathlib
 
 # === Page Setup ===
-st.set_page_config(page_title="AI-IDPS Dashboard", layout="wide")
+st.set_page_config(page_title="AI-IDPS Live Dashboard", layout="wide")
 
 # === Title ===
-st.title("🚨 Real-Time Intrusion Detection Dashboard")
-st.subheader("Monitoring NSL-KDD real network traffic...")
+st.title("🛡️ AI-Powered Intrusion Detection Dashboard")
+st.subheader("Monitoring real network traffic (via packet sniffer)...")
+
+# === Paths
+LOG_FILE = "data/processed/live_sniffer_log.csv"
 
 # === Initialize State ===
-if 'running' not in st.session_state:
-    st.session_state.running = False
 if 'normal_count' not in st.session_state:
     st.session_state.normal_count = 0
 if 'attack_count' not in st.session_state:
@@ -27,144 +28,116 @@ if 'attack_count' not in st.session_state:
 if 'alerts' not in st.session_state:
     st.session_state.alerts = []
 if 'traffic_history' not in st.session_state:
-    st.session_state.traffic_history = pd.DataFrame(columns=["Time", "Normal", "Attacks"])
-if 'current_index' not in st.session_state:
-    st.session_state.current_index = 0
-if 'correct_predictions' not in st.session_state:
-    st.session_state.correct_predictions = 0
-if 'y_true' not in st.session_state:
-    st.session_state.y_true = []
-if 'y_pred' not in st.session_state:
-    st.session_state.y_pred = []
-
-# === Load Real Samples ===
-DATA_DIR = 'data/processed/'
-X_test = np.load(DATA_DIR + 'X_test.npy')
-y_test = np.load(DATA_DIR + 'y_test.npy')
+    st.session_state.traffic_history = pd.DataFrame(columns=["Time", "Normal", "Attack"])
+if 'last_row_read' not in st.session_state:
+    st.session_state.last_row_read = 0
 
 # === User Controls ===
-start_button, stop_button, reset_button = st.columns(3)
+st.markdown("### 🧪 Demo Controls")
 
-if start_button.button("▶️ Start Detection"):
-    st.session_state.running = True
+col1, col2 = st.columns([1, 1])
+simulate_mode = col1.toggle("Enable Demo Mode (Simulate Attacks)", value=False)
+reset_clicked = col2.button("🧹 Reset Logs")
 
-if stop_button.button("⏹️ Stop Detection"):
-    st.session_state.running = False
-
-if reset_button.button("🔄 Reset Detection"):
-    st.session_state.running = False
+if reset_clicked:
+    if os.path.exists(LOG_FILE):
+        os.remove(LOG_FILE)
     st.session_state.normal_count = 0
     st.session_state.attack_count = 0
     st.session_state.alerts = []
-    st.session_state.traffic_history = pd.DataFrame(columns=["Time", "Normal", "Attacks"])
-    st.session_state.current_index = 0
-    st.session_state.correct_predictions = 0
-    st.session_state.y_true = []
-    st.session_state.y_pred = []
-    st.rerun()
+    st.session_state.traffic_history = pd.DataFrame(columns=["Time", "Normal", "Attack"])
+    st.session_state.last_row_read = 0
+    st.success("🧼 Logs cleared.")
 
-st.divider()
+# === Demo Simulation Mode (if enabled) ===
+if simulate_mode:
+    timestamp = time.strftime("%H:%M:%S")
+    is_attack = 1 if random.random() < 0.3 else 0  # 30% chance it's an attack
 
-# === Layout Placeholders ===
+    with open(LOG_FILE, "a", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([timestamp, is_attack])
+
+    st.info(f"🧪 Simulated {'ATTACK' if is_attack else 'normal'} packet at {timestamp}")
+
+
+# === Live Data Pull from Packet Sniffer ===
+if os.path.exists(LOG_FILE):
+    df = pd.read_csv(LOG_FILE, names=["Time", "Prediction"])
+    new_data = df.iloc[st.session_state.last_row_read:]
+    st.session_state.last_row_read = len(df)
+
+    # Update metrics
+    normal_new = (new_data["Prediction"] == 0).sum()
+    attack_new = (new_data["Prediction"] == 1).sum()
+    st.session_state.normal_count += normal_new
+    st.session_state.attack_count += attack_new
+
+    # Update alerts
+    for _, row in new_data.iterrows():
+        if row["Prediction"] == 1:
+            st.session_state.alerts.append(f"🚨 Attack detected at {row['Time']}")
+
+    # Update traffic history
+    grouped = df.groupby("Time")["Prediction"].value_counts().unstack(fill_value=0)
+    grouped = grouped.rename(columns={0: "Normal", 1: "Attack"}).reset_index()
+    st.session_state.traffic_history = grouped
+
+# === Layout Metrics ===
 col1, col2, col3 = st.columns(3)
 col1.metric("✅ Normal Packets", value=st.session_state.normal_count)
 col2.metric("🚨 Detected Attacks", value=st.session_state.attack_count)
-
-# === Live Accuracy ===
-if st.session_state.current_index > 0:
-    live_accuracy = (st.session_state.correct_predictions / st.session_state.current_index) * 100
-else:
-    live_accuracy = 0.0
-col3.metric("📈 Live Accuracy (%)", value=f"{live_accuracy:.2f}%")
+total = st.session_state.normal_count + st.session_state.attack_count
+attack_ratio = (st.session_state.attack_count / total * 100) if total > 0 else 0
+col3.metric("📊 Attack Rate", f"{attack_ratio:.2f} %")
 
 st.divider()
 
-# === Live Alerts Section ===
+# === Alerts ===
 st.subheader("Live Alerts:")
-alert_placeholder = st.empty()
+if st.session_state.alerts:
+    st.text("\n".join(st.session_state.alerts[-5:]))
+else:
+    st.info("Waiting for live packet data...")
 
 st.divider()
 
-# === Traffic Overview ===
-st.subheader("Traffic Overview Over Time")
-chart_placeholder = st.empty()
-
-st.subheader("Traffic Type Distribution")
-pie_placeholder = st.empty()
-
-st.subheader("📊 Live Confusion Matrix")
-conf_matrix_placeholder = st.empty()
-
-# === Single Detection Step ===
-if st.session_state.running and st.session_state.current_index < len(X_test):
-    # Fetch real sample
-    sample = X_test[st.session_state.current_index]
-    true_label = y_test[st.session_state.current_index]
-
-    prediction = predict_intrusion(sample)
-
-    # Track true and predicted
-    st.session_state.y_true.append(true_label)
-    st.session_state.y_pred.append(prediction)
-
-    if prediction == true_label:
-        st.session_state.correct_predictions += 1
-
-    if prediction == 1:
-        st.session_state.attack_count += 1
-        st.session_state.alerts.append(f"🚨 Attack detected at {time.strftime('%H:%M:%S')}")
-        respond_to_intrusion(sample, prediction)
-    else:
-        st.session_state.normal_count += 1
-
-    # Update traffic history
-    current_time = time.strftime('%H:%M:%S')
-    new_row = {"Time": current_time,
-               "Normal": st.session_state.normal_count,
-               "Attacks": st.session_state.attack_count}
-    
-    st.session_state.traffic_history = pd.concat(
-        [st.session_state.traffic_history, pd.DataFrame([new_row])],
-        ignore_index=True
-    )
-
-    # Move to next sample
-    st.session_state.current_index += 1
-
-    time.sleep(1)
-    st.rerun()
-
-# === After Processing All Packets ===
-if st.session_state.current_index >= len(X_test) and st.session_state.running:
-    st.success("✅ Completed processing all samples!")
-    st.session_state.running = False
-
-# === Display UI at every step ===
-if st.session_state.alerts:
-    alert_placeholder.write("\n".join(st.session_state.alerts[-5:]))
-
+# === Chart: Time Series ===
+st.subheader("📈 Packet Flow Over Time")
 if not st.session_state.traffic_history.empty:
-    traffic_plot = st.session_state.traffic_history.set_index('Time')
-    chart_placeholder.line_chart(traffic_plot)
+    chart_df = st.session_state.traffic_history.set_index("Time")
+    st.line_chart(chart_df)
 
-pie_chart_data = pd.DataFrame({
-    'Traffic Type': ['Normal', 'Attack'],
-    'Count': [st.session_state.normal_count, st.session_state.attack_count]
+# === Chart: Pie ===
+st.subheader("📊 Traffic Type Distribution")
+pie_data = pd.DataFrame({
+    "Type": ["Normal", "Attack"],
+    "Count": [st.session_state.normal_count, st.session_state.attack_count]
 })
-pie_fig = px.pie(pie_chart_data, names='Traffic Type', values='Count',
-                 color_discrete_map={'Normal':'blue', 'Attack':'red'})
-pie_placeholder.plotly_chart(pie_fig, use_container_width=True)
+pie_fig = px.pie(pie_data, names='Type', values='Count', color='Type',
+                 color_discrete_map={'Normal': 'blue', 'Attack': 'red'})
+st.plotly_chart(pie_fig, use_container_width=True)
 
-# === Live Confusion Matrix Display ===
-if st.session_state.y_true and st.session_state.y_pred:
-    cm = confusion_matrix(st.session_state.y_true, st.session_state.y_pred, labels=[0,1])
+# --- Blocked IPs Panel ---
+st.subheader("🛑 Blocked IPs Log")
 
-    fig, ax = plt.subplots()
-    sns.heatmap(cm, annot=True, fmt='d', cmap="Blues", cbar=False,
-                xticklabels=["Normal", "Attack"],
-                yticklabels=["Normal", "Attack"])
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    plt.title("Confusion Matrix (Live)")
+LOG_FILE_BLOCKED = "data/processed/firewall_log.txt"
 
-    conf_matrix_placeholder.pyplot(fig)
+if pathlib.Path(LOG_FILE_BLOCKED).exists():
+    with open(LOG_FILE_BLOCKED, "r") as f:
+        lines = f.readlines()
+
+    if lines:
+        # Parse lines into a table: datetime and IP
+        data = []
+        for line in lines[-10:]:  # show last 10 blocked IPs
+            parts = line.strip().split(" - Blocked IP: ")
+            if len(parts) == 2:
+                timestamp, ip = parts
+                data.append({"Time": timestamp, "IP Address": ip})
+
+        st.table(data)
+    else:
+        st.info("No IPs blocked yet.")
+else:
+    st.info("No firewall log found. No IPs blocked yet.")

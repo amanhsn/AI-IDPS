@@ -30,15 +30,14 @@ def predict_intrusion(sample):
     return pred
 
 # === Response Function ===
-def respond_to_intrusion(sample, prediction):
-    """
-    Handle detection response: print alert and log incident.
-    """
+def respond_to_intrusion(features, prediction, attacker_ip=None):
     if prediction == 1:
-        print(f"[ALERT 🚨] Intrusion detected at {datetime.datetime.now()}")
-        log_intrusion(sample)
-    else:
-        print(f"[INFO ✅] Normal traffic at {datetime.datetime.now()}")
+        print("🚨 Intrusion detected. Triggering response...")
+        if attacker_ip:
+            block_ip(attacker_ip)
+        else:
+            block_ip("127.0.0.1")  # fallback IP
+
 
 # === Logger Function ===
 def log_intrusion(sample):
